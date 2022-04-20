@@ -1,0 +1,215 @@
+---
+title: "Homework3"
+author: "Thomas Shi"
+date: "2022/4/19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(corrr)
+library(discrim)
+library(klaR)
+library(MASS)
+library(dplyr)
+library(poissonreg)
+library(pROC)
+tidymodels_prefer()
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+```
+
+1
+
+```{r, echo = T}
+titanic <- read.csv('titanic.csv')
+titanic %>% head()
+titanic$survived <- as.factor(titanic$survived)
+titanic$pclass <- as.factor(titanic$pclass)
+set.seed(3435)
+titanic_split <- initial_split(titanic, prop = 0.75,
+                                strata = survived)
+titanic_train <- training(titanic_split)
+titanic_test <- testing(titanic_split)
+titanic_train %>% head()
+```
+
+The proportion of training data is 0.75 and the proportion of testing data is 0.25. I choose this combination because training 
+data will have 668 individuals which will be enough for building a model. The size of testing set will be 223 which 
+will be enough for testing the validty of our model to prevent overfitting.
+
+
+There are missing data in the trainning set. Some people's ages are missing. Most of the people's carbin is NA, so 
+we may be able to exclude that feature. 
+
+Our strata is survived, so if we do a stratified sampling, we can make sure that our sample have enough numbers of both 
+survived and victims while fitting our classified model.Also, we want the proportion of victim and survived of 
+training set is the same as the proportion of victim and survived of testing set. 
+Moreover, we can capture key characteristics of both survived and victims
+
+
+2
+```{r, echo = T}
+ggplot(data = titanic_train, aes(x = survived)) + geom_bar()
+```
+Number of victims is larger than the number of survived. The number of survived is approximately 2/3 of the number of victims
+
+
+3
+```{r, echo = T}
+cor_titanic <- titanic_train %>%
+  dplyr::select(age, sib_sp, parch, fare) %>%
+  correlate()
+rplot(cor_titanic)
+cor_titanic %>%
+  stretch() %>%
+  ggplot(aes(x, y, fill = r)) +
+  geom_tile() +
+  geom_text(aes(label = as.character(fashion(r))))
+```
+
+There are no strong correlations between continuous variables. The strongest correlation is the positive relation between parch and sib_sp
+
+
+4
+```{r, echo = T}
+titanic_train2 <- titanic_train %>% dplyr::select(survived, pclass, sex, age, sib_sp, parch, fare)
+titanic_recipe <- recipe(survived ~ ., data = titanic_train2) %>%
+  step_impute_linear(age)
+titanic_recipe <- titanic_recipe %>% step_dummy(sex)
+titanic_recipe <- titanic_recipe %>%
+  step_interact(terms = ~ starts_with('sex') : fare)
+titanic_recipe <- titanic_recipe %>%
+  step_interact(terms = ~ age : fare)
+
+titanic_recipe
+
+
+
+```
+
+
+5
+```{r, echo = T}
+log_reg <- logistic_reg() %>% 
+  set_engine("glm") %>% 
+  set_mode("classification")
+log_wkflow <- workflow() %>% 
+  add_model(log_reg) %>% 
+  add_recipe(titanic_recipe)
+
+log_fit <- fit(log_wkflow, titanic_train2)
+log_fit %>% tidy()
+```
+
+
+6
+```{r, echo = T}
+lda_mod <- discrim_linear() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+lda_wkflow <- workflow() %>% 
+  add_model(lda_mod) %>% 
+  add_recipe(titanic_recipe)
+
+lda_fit <- fit(lda_wkflow, titanic_train2)
+```
+
+
+7
+```{r, echo = T}
+qda_mod <- discrim_quad() %>% 
+  set_mode("classification") %>% 
+  set_engine("MASS")
+
+qda_wkflow <- workflow() %>% 
+  add_model(qda_mod) %>% 
+  add_recipe(titanic_recipe)
+
+qda_fit <- fit(qda_wkflow, titanic_train2)
+```
+
+
+8
+```{r, echo = T}
+nb_mod <- naive_Bayes() %>% 
+  set_mode("classification") %>% 
+  set_engine("klaR") %>% 
+  set_args(usekernel = FALSE) 
+
+nb_wkflow <- workflow() %>% 
+  add_model(nb_mod) %>% 
+  add_recipe(titanic_recipe)
+
+nb_fit <- fit(nb_wkflow, titanic_train2)
+```
+
+
+9
+```{r, echo = T, error = F}
+predict(log_fit, new_data = titanic_train2, type = "class")
+augment(log_fit, new_data = titanic_train2) %>%
+  conf_mat(truth = survived, estimate = .pred_class)
+log_reg_acc <- augment(log_fit, new_data = titanic_train2) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+log_reg_acc
+
+predict(lda_fit, new_data = titanic_train2, type = "class")
+augment(lda_fit, new_data = titanic_train2) %>%
+  conf_mat(truth = survived, estimate = .pred_class)
+lda_acc <- augment(lda_fit, new_data = titanic_train2) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+lda_acc
+
+predict(qda_fit, new_data = titanic_train2, type = "class")
+augment(qda_fit, new_data = titanic_train2) %>%
+  conf_mat(truth = survived, estimate = .pred_class) 
+qda_acc <- augment(qda_fit, new_data = titanic_train2) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+qda_acc
+
+predict(nb_fit, new_data = titanic_train2, type = "class")
+augment(nb_fit, new_data = titanic_train2) %>%
+  conf_mat(truth = survived, estimate = .pred_class) 
+nb_acc <- augment(nb_fit, new_data = titanic_train2) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+nb_acc
+
+accuracies <- c(log_reg_acc$.estimate, lda_acc$.estimate, 
+                nb_acc$.estimate, qda_acc$.estimate)
+models <- c("Logistic Regression", "LDA", "Naive Bayes", "QDA")
+results <- tibble(accuracies = accuracies, models = models)
+results %>% 
+  arrange(-accuracies)
+```
+
+The logistic model has the highest accuracy
+
+
+10
+```{r, echo = T}
+titanic_test2 <- titanic_test %>% dplyr::select(survived, pclass, sex, age, sib_sp, parch, fare)
+predict(log_fit, new_data = titanic_test2, type = "class")
+augment(log_fit, new_data = titanic_test2) %>%
+  conf_mat(truth = survived, estimate = .pred_class) %>%
+  autoplot(type = "heatmap")
+log_test_acc <- augment(log_fit, new_data = titanic_test2) %>%
+  accuracy(truth = survived, estimate = .pred_class)
+log_test_acc
+
+augment(log_fit, new_data = titanic_test2) %>%
+  roc_curve(survived, .pred_No) %>%
+  autoplot()
+
+augment(log_fit, new_data = titanic_test2) %>%
+  roc_auc(survived, .pred_No)
+
+
+
+
+
+
+
+```
+The accuracy is 0.79, the accuracy of training set is lower which is normal because the model is fitted from training set so the accuracy on training set will be higher than the accuracy on testing set. AUC is 0.864 which means that the model perform really well.
